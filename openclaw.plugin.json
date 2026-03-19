@@ -1,0 +1,33 @@
+{
+  "id": "oktsec",
+  "name": "oktsec",
+  "version": "0.1.0",
+  "description": "Runtime security for AI agent tool calls. 188 detection rules, tamper-evident audit trail, delegation chains.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "gatewayUrl": {
+        "type": "string",
+        "description": "oktsec gateway URL",
+        "default": "http://127.0.0.1:9090"
+      },
+      "mode": {
+        "type": "string",
+        "enum": ["enforce", "observe"],
+        "description": "enforce blocks threats, observe logs only",
+        "default": "enforce"
+      },
+      "dashboardUrl": {
+        "type": "string",
+        "description": "oktsec dashboard URL",
+        "default": "http://127.0.0.1:8080/dashboard"
+      },
+      "agent": {
+        "type": "string",
+        "description": "Agent name for oktsec registration",
+        "default": "openclaw"
+      }
+    },
+    "additionalProperties": false
+  }
+}
