@@ -116,12 +116,21 @@ export default function register(api: OpenClawPluginApi) {
 
     const content = String(e.content || e.body || e.text || e.message || "");
     const channelId = String(c.channelId || c.channel || "webchat");
-    const conversationId = String(c.conversationId || "");
+    let conversationId = String(c.conversationId || "");
     const agent = String(c.senderId || c.from || config.agent);
-    // Build a simple session: "telegram:974633296" or "webchat"
+    // conversationId may include channel prefix (e.g., "telegram:974633296").
+    // Strip it to match OpenClaw's sessionKey format: agent:main:{channel}:direct:{id}
+    if (conversationId.startsWith(channelId + ":")) {
+      conversationId = conversationId.slice(channelId.length + 1);
+    }
+    // Match OpenClaw's sessionKey exactly.
+    // Telegram: agent:main:telegram:direct:{id}
+    // Webchat: agent:main:main (no channel prefix)
     const session = c.sessionKey
       ? String(c.sessionKey)
-      : conversationId ? `${channelId}:${conversationId}` : channelId;
+      : conversationId
+        ? `agent:main:${channelId}:direct:${conversationId}`
+        : "agent:main:main";
 
     if (!content) return;
 
@@ -137,7 +146,7 @@ export default function register(api: OpenClawPluginApi) {
   api.on("message_sending", async (event: unknown, ctx: unknown) => {
     const e = event as Record<string, unknown>;
     const c = (ctx || {}) as Record<string, unknown>;
-    log.warn(`oktsec: >>> message_sending FIRED keys=[${keys(e)}] ctx=[${keys(c)}]`);
+    log.debug(`oktsec: message_sending keys=[${keys(e)}]`);
 
     const content = String(e.content || e.body || e.text || e.message || "");
     if (!content) return;
@@ -157,7 +166,7 @@ export default function register(api: OpenClawPluginApi) {
   api.on("message_sent", async (event: unknown, ctx: unknown) => {
     const e = event as Record<string, unknown>;
     const c = (ctx || {}) as Record<string, unknown>;
-    log.warn(`oktsec: >>> message_sent FIRED keys=[${keys(e)}] ctx=[${keys(c)}]`);
+    log.debug(`oktsec: message_sent keys=[${keys(e)}]`);
 
     const content = String(e.content || e.body || e.text || e.message || "");
     if (!content) return;
@@ -186,6 +195,9 @@ export default function register(api: OpenClawPluginApi) {
     }
 
     if (!content || content.length < 3) return;
+
+    // Strip OpenClaw reply markers (e.g., "[[reply_to_current]]")
+    content = content.replace(/\[\[reply_to_\w+\]\]\s*/g, "");
 
     const agentId = String(c.agentId || c.agent || "main");
     const session = String(c.sessionKey || c.sessionId || "");
