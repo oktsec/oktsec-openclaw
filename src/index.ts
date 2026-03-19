@@ -32,96 +32,153 @@ function resolveConfig(api: OpenClawPluginApi): OktsecConfig {
   };
 }
 
+/** Safely extract a string from nested unknown objects */
+function str(obj: unknown, ...keys: string[]): string {
+  let current = obj as Record<string, unknown> | undefined;
+  for (const k of keys) {
+    if (!current || typeof current !== "object") return "";
+    current = current[k] as Record<string, unknown> | undefined;
+  }
+  return current ? String(current) : "";
+}
+
+/** Summarize an unknown object's top-level keys for debug */
+function keys(obj: unknown): string {
+  if (!obj || typeof obj !== "object") return "null";
+  return Object.keys(obj as Record<string, unknown>).join(",");
+}
+
 export default function register(api: OpenClawPluginApi) {
   const config = resolveConfig(api);
   const client = new OktsecClient(config);
   const log = api.logger;
 
-  // 1. Intercept tool calls BEFORE execution
-  api.on("before_tool_call", async (event: unknown, ctx: unknown) => {
-    const e = event as Record<string, unknown>;
-    const c = ctx as Record<string, unknown>;
-    const toolName = String(e.toolName || e.name || "unknown");
-    const toolInput = JSON.stringify(e.input || e.args || {});
-
-    log.info(`oktsec: before_tool_call ${toolName}`);
-
+  async function forward(toolName: string, toolInput: string, event: string, agent: string, sessionId?: string) {
     try {
       const decision = await client.sendToolEvent({
         tool_name: toolName,
         tool_input: toolInput,
-        event: "pre_tool_call",
-        agent: String(c.agentId || config.agent),
-        session_id: String(c.sessionKey || ""),
+        event: event as "pre_tool_call" | "post_tool_call",
+        agent: agent || config.agent,
+        session_id: sessionId,
       });
-
-      log.info(`oktsec: decision=${decision.decision} for ${toolName}`);
-
-      if (decision.decision === "block" && config.mode === "enforce") {
-        log.warn(`oktsec BLOCKED tool ${toolName}: ${decision.reason}`);
-        return { block: true, message: `oktsec: ${decision.reason}` };
-      }
+      log.info(`oktsec: ${toolName} -> ${decision.decision}`);
+      return decision;
     } catch (err) {
-      log.warn(`oktsec: forward failed: ${err}`);
+      log.warn(`oktsec: forward ${toolName} failed: ${err}`);
+      return { decision: "allow" as const };
+    }
+  }
+
+  // 1. Intercept tool calls BEFORE execution (can block)
+  api.on("before_tool_call", async (event: unknown, ctx: unknown) => {
+    const e = event as Record<string, unknown>;
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.info(`oktsec: before_tool_call keys=[${keys(e)}] ctx=[${keys(c)}]`);
+
+    const toolName = String(e.toolName || e.name || e.tool || "unknown");
+    const input = e.input || e.args || e.arguments || e.toolInput || {};
+    const toolInput = typeof input === "string" ? input : JSON.stringify(input);
+    const agentId = String(c.agentId || c.agent || "main");
+    const agent = `openclaw-${agentId}`;
+    const session = String(c.sessionKey || c.sessionId || "");
+
+    log.info(`oktsec: before_tool_call ${toolName} agent=${agent} session=${session}`);
+    const decision = await forward(toolName, toolInput, "pre_tool_call", agent, session);
+
+    if (decision.decision === "block" && config.mode === "enforce") {
+      log.warn(`oktsec: BLOCKED ${toolName}: ${decision.reason}`);
+      return { block: true, message: `oktsec: ${decision.reason}` };
     }
     return undefined;
   });
 
-  // 2. Scan incoming messages
+  // 2. Audit tool calls AFTER execution
+  api.on("after_tool_call", async (event: unknown, ctx: unknown) => {
+    const e = event as Record<string, unknown>;
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.info(`oktsec: after_tool_call keys=[${keys(e)}]`);
+
+    const toolName = String(e.toolName || e.name || e.tool || "unknown");
+    const result = e.result || e.output || e.content || "";
+    const toolOutput = typeof result === "string" ? result : JSON.stringify(result);
+    const agentId = String(c.agentId || c.agent || "main");
+    const agent = `openclaw-${agentId}`;
+    const session = String(c.sessionKey || c.sessionId || "");
+
+    await forward(toolName + "_result", toolOutput, "post_tool_call", agent, session);
+  });
+
+  // 3. Scan incoming messages
   api.on("message_received", async (event: unknown, ctx: unknown) => {
     const e = event as Record<string, unknown>;
-    const c = ctx as Record<string, unknown>;
-    const content = String(e.content || e.body || "");
+    const c = (ctx || {}) as Record<string, unknown>;
 
-    log.info(`oktsec: message_received len=${content.length} from=${c.channelId || "web"}`);
+    const content = String(e.content || e.body || e.text || e.message || "");
+    const from = String(c.channelId || c.channel || c.senderId || "telegram");
+    const agent = String(c.senderId || c.from || config.agent);
+    const session = String(c.sessionKey || c.sessionId || "");
 
-    if (!content) return;
+    if (!content) {
+      log.info(`oktsec: message_received EMPTY keys=[${keys(e)}] ctx=[${keys(c)}]`);
+      return;
+    }
 
-    try {
-      const decision = await client.sendToolEvent({
-        tool_name: "message",
-        tool_input: content,
-        event: "pre_tool_call",
-        agent: String(c.senderId || config.agent),
-        session_id: String(c.sessionKey || ""),
-      });
+    log.info(`oktsec: message_received len=${content.length} from=${from}`);
+    const decision = await forward("message", content, "pre_tool_call", agent, session);
 
-      log.info(`oktsec: message decision=${decision.decision}`);
-
-      if (decision.decision === "block" && config.mode === "enforce") {
-        log.warn(`oktsec BLOCKED message: ${decision.reason}`);
-      }
-    } catch (err) {
-      log.warn(`oktsec: message forward failed: ${err}`);
+    if (decision.decision === "block" && config.mode === "enforce") {
+      log.warn(`oktsec: BLOCKED message: ${decision.reason}`);
     }
   });
 
-  // 3. Audit outgoing messages
-  api.on("message_sent", async (event: unknown) => {
+  // 4. Scan outgoing messages (agent responses)
+  api.on("message_sending", async (event: unknown, ctx: unknown) => {
     const e = event as Record<string, unknown>;
-    const content = String(e.content || e.body || "");
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.info(`oktsec: message_sending keys=[${keys(e)}] ctx=[${keys(c)}]`);
+
+    const content = String(e.content || e.body || e.text || e.message || "");
     if (!content) return;
 
-    try {
-      await client.sendToolEvent({
-        tool_name: "message_out",
-        tool_input: content,
-        event: "post_tool_call",
-        agent: config.agent,
-      });
-      log.info("oktsec: message_sent forwarded");
-    } catch (err) {
-      log.warn(`oktsec: message_sent forward failed: ${err}`);
+    const session = String(c.sessionKey || c.sessionId || "");
+    const agentId = String(c.agentId || c.agent || "main");
+    const decision = await forward("message_out", content, "pre_tool_call", `openclaw-${agentId}`, session);
+
+    if (decision.decision === "block" && config.mode === "enforce") {
+      log.warn(`oktsec: BLOCKED outgoing: ${decision.reason}`);
+      return { block: true, reason: `oktsec: ${decision.reason}` };
     }
+    return undefined;
   });
 
-  // 4. LLM input monitoring
-  api.on("llm_input", async (event: unknown, ctx: unknown) => {
-    const c = ctx as Record<string, unknown>;
-    log.info(`oktsec: llm_input agent=${c.agentId || "main"}`);
+  // 5. Audit sent messages
+  api.on("message_sent", async (event: unknown, ctx: unknown) => {
+    const e = event as Record<string, unknown>;
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.info(`oktsec: message_sent keys=[${keys(e)}] ctx=[${keys(c)}]`);
+
+    const content = String(e.content || e.body || e.text || e.message || "");
+    if (!content) return;
+
+    const session = String(c.sessionKey || c.sessionId || "");
+    const agentId = String(c.agentId || c.agent || "main");
+    await forward("message_sent", content, "post_tool_call", `openclaw-${agentId}`, session);
   });
 
-  // 5. Slash command
+  // 6. LLM input/output monitoring (log only, no scanning - prompts contain
+  // legitimate metadata that triggers false positives like TC-005 and IAP-002)
+  api.on("llm_input", async (_event: unknown, ctx: unknown) => {
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.debug(`oktsec: llm_input agent=${c.agentId || "main"}`);
+  });
+
+  api.on("llm_output", async (_event: unknown, ctx: unknown) => {
+    const c = (ctx || {}) as Record<string, unknown>;
+    log.debug(`oktsec: llm_output agent=${c.agentId || "main"}`);
+  });
+
+  // 7. Slash command
   try {
     api.registerCommand({
       name: "oktsec",
