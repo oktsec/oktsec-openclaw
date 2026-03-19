@@ -115,16 +115,17 @@ export default function register(api: OpenClawPluginApi) {
     const c = (ctx || {}) as Record<string, unknown>;
 
     const content = String(e.content || e.body || e.text || e.message || "");
-    const from = String(c.channelId || c.channel || c.senderId || "telegram");
+    const channelId = String(c.channelId || c.channel || "webchat");
+    const conversationId = String(c.conversationId || "");
     const agent = String(c.senderId || c.from || config.agent);
-    const session = String(c.sessionKey || c.sessionId || "");
+    // Build a simple session: "telegram:974633296" or "webchat"
+    const session = c.sessionKey
+      ? String(c.sessionKey)
+      : conversationId ? `${channelId}:${conversationId}` : channelId;
 
-    if (!content) {
-      log.info(`oktsec: message_received EMPTY keys=[${keys(e)}] ctx=[${keys(c)}]`);
-      return;
-    }
+    if (!content) return;
 
-    log.info(`oktsec: message_received len=${content.length} from=${from}`);
+    log.info(`oktsec: message_received len=${content.length} from=${channelId} session=${session}`);
     const decision = await forward("message", content, "pre_tool_call", agent, session);
 
     if (decision.decision === "block" && config.mode === "enforce") {
