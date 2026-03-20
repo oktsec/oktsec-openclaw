@@ -117,7 +117,26 @@ export default function register(api: OpenClawPluginApi) {
     const content = String(e.content || e.body || e.text || e.message || "");
     const channelId = String(c.channelId || c.channel || "webchat");
     let conversationId = String(c.conversationId || "");
-    const agent = String(c.senderId || c.from || config.agent);
+
+    // Extract human identity from event metadata
+    const meta = (e.metadata || {}) as Record<string, unknown>;
+    const senderName = String(meta.senderName || "");
+    const senderUsername = String(meta.senderUsername || "");
+    const senderId = String(meta.senderId || c.senderId || e.from || "");
+
+    // Build human-readable agent name: "Gus (@guuuuus)" or "974633296" or "webchat-user"
+    let agent: string;
+    if (senderName && senderUsername) {
+      agent = `${senderName} (@${senderUsername})`;
+    } else if (senderName) {
+      agent = senderName;
+    } else if (senderUsername) {
+      agent = `@${senderUsername}`;
+    } else if (senderId) {
+      agent = senderId;
+    } else {
+      agent = `${channelId}-user`;
+    }
     // conversationId may include channel prefix (e.g., "telegram:974633296").
     // Strip it to match OpenClaw's sessionKey format: agent:main:{channel}:direct:{id}
     if (conversationId.startsWith(channelId + ":")) {
@@ -134,8 +153,11 @@ export default function register(api: OpenClawPluginApi) {
 
     if (!content) return;
 
-    log.info(`oktsec: message_received len=${content.length} from=${channelId} session=${session}`);
-    const decision = await forward("message", content, "pre_tool_call", agent, session);
+    // Strip wrapping quotes from content (comes JSON-encoded from some hooks)
+    const cleanContent = content.replace(/^"|"$/g, "");
+
+    log.info(`oktsec: message_received from=${agent} session=${session}`);
+    const decision = await forward("message", cleanContent, "pre_tool_call", agent, session);
 
     if (decision.decision === "block" && config.mode === "enforce") {
       log.warn(`oktsec: BLOCKED message: ${decision.reason}`);
@@ -196,8 +218,8 @@ export default function register(api: OpenClawPluginApi) {
 
     if (!content || content.length < 3) return;
 
-    // Strip OpenClaw reply markers (e.g., "[[reply_to_current]]")
-    content = content.replace(/\[\[reply_to_\w+\]\]\s*/g, "");
+    // Strip OpenClaw reply markers and wrapping quotes
+    content = content.replace(/\[\[reply_to_\w+\]\]\s*/g, "").replace(/^"|"$/g, "");
 
     const agentId = String(c.agentId || c.agent || "main");
     const session = String(c.sessionKey || c.sessionId || "");
