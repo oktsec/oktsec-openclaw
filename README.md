@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![oktsec](https://img.shields.io/badge/powered%20by-oktsec-8b7cf7)](https://github.com/oktsec/oktsec)
 
-Runtime security plugin for OpenClaw. Intercepts agent tool calls and messages, scans through 268 detection rules, and blocks threats before execution.
+Runtime security plugin for OpenClaw. Intercepts agent tool calls and messages, scans through 268 detection rules across 19 categories, and blocks threats before execution.
 
 ## Install
 
@@ -14,17 +14,17 @@ openclaw plugins install @oktsec/openclaw
 
 ## Prerequisites
 
-oktsec gateway must be running:
+oktsec must be running:
 
 ```bash
 brew install oktsec/tap/oktsec
-oktsec serve
+oktsec run
 ```
 
 ## Quick start
 
 1. Install the plugin: `openclaw plugins install @oktsec/openclaw`
-2. Start oktsec: `oktsec serve`
+2. Start oktsec: `oktsec run`
 3. Start OpenClaw: `openclaw gateway`
 4. Send a message via Telegram, Discord, or the web chat
 5. Open the oktsec dashboard to see every event in real-time
@@ -37,6 +37,7 @@ oktsec serve
 | Outgoing messages | `message_sending` / `message_sent` | Agent -> User |
 | Tool calls (before) | `before_tool_call` | Agent -> Tool |
 | Tool results (after) | `after_tool_call` | Tool -> Agent |
+| Agent responses | `llm_output` | Agent -> Audit |
 
 Every intercepted event is scanned through oktsec's security pipeline:
 
